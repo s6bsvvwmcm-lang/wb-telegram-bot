@@ -1,4 +1,10 @@
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler
+)
+
 import requests
 from datetime import datetime, timedelta
 import time
@@ -7,20 +13,33 @@ import os
 TOKEN = os.getenv("TOKEN")
 WB_TOKEN = os.getenv("WB_TOKEN")
 
+CACHE_SECONDS = 300
+
 stocks_cache = {
     "time": 0,
     "data": None
 }
 
-CACHE_SECONDS = 300
-
 
 async def start(update, context):
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📦 Остатки",
+                callback_data="stocks"
+            ),
+            InlineKeyboardButton(
+                "💰 Продажи",
+                callback_data="sales"
+            ),
+        ]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
-        "Бот работает 24/7 🚀\n\n"
-        "Команды:\n"
-        "/stocks — остатки WB\n"
-        "/sales — продажи за последние 24 часа"
+        "WB Бот 24/7 🚀\n\nВыберите действие:",
+        reply_markup=reply_markup
     )
 
 
@@ -29,8 +48,12 @@ def wb_get(url, params):
 
     now = time.time()
 
+    # Кэш для остатков
     if "stocks" in url:
-        if stocks_cache["data"] and now - stocks_cache["time"] < CACHE_SECONDS:
+        if (
+            stocks_cache["data"]
+            and now - stocks_cache["time"] < CACHE_SECONDS
+        ):
             return stocks_cache["data"]
 
     headers = {
@@ -45,11 +68,15 @@ def wb_get(url, params):
     )
 
     if response.status_code == 429:
-        raise Exception("Слишком много запросов к WB. Подожди 5–10 минут.")
+        raise Exception(
+            "⚠️ Слишком много запросов к WB.\nПодождите 5–10 минут."
+        )
 
     response.raise_for_status()
+
     data = response.json()
 
+    # Сохраняем остатки в кэш
     if "stocks" in url:
         stocks_cache["data"] = data
         stocks_cache["time"] = now
@@ -67,27 +94,60 @@ async def stocks(update, context):
     try:
         data = wb_get(url, params)
 
-        total = sum(item.get("quantity", 0) for item in data)
+        total = sum(
+            item.get("quantity", 0)
+            for item in data
+        )
 
         text = f"📦 Остатки WB: {total} шт\n\n"
 
         for item in data[:20]:
-            article = item.get("supplierArticle", "Без артикула")
+            article = item.get(
+                "supplierArticle",
+                "Без артикула"
+            )
+
             quantity = item.get("quantity", 0)
-            warehouse = item.get("warehouseName", "-")
 
-            text += f"{article} — {quantity} шт\nСклад: {warehouse}\n\n"
+            warehouse = item.get(
+                "warehouseName",
+                "-"
+            )
 
-        await update.message.reply_text(text[:4000])
+            text += (
+                f"{article}\n"
+                f"Остаток: {quantity} шт\n"
+                f"Склад: {warehouse}\n\n"
+            )
+
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                text[:4000]
+            )
+        else:
+            await update.message.reply_text(
+                text[:4000]
+            )
 
     except Exception as e:
-        await update.message.reply_text(f"Ошибка /stocks: {e}")
+        error_text = f"Ошибка /stocks: {e}"
+
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                error_text
+            )
+        else:
+            await update.message.reply_text(
+                error_text
+            )
 
 
 async def sales(update, context):
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
 
-    date_from = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+    date_from = (
+        datetime.now() - timedelta(days=1)
+    ).strftime("%Y-%m-%dT00:00:00")
 
     params = {
         "dateFrom": date_from
@@ -97,16 +157,27 @@ async def sales(update, context):
         data = wb_get(url, params)
 
         if not data:
-            await update.message.reply_text("Продаж за последние 24 часа не найдено.")
+            text = "Продаж за последние 24 часа не найдено."
+
+            if update.callback_query:
+                await update.callback_query.message.reply_text(text)
+            else:
+                await update.message.reply_text(text)
+
             return
 
         total_sum = 0
         total_count = 0
+
         article_stats = {}
 
         for item in data:
             price = item.get("finishedPrice", 0)
-            article = item.get("supplierArticle", "Без артикула")
+
+            article = item.get(
+                "supplierArticle",
+                "Без артикула"
+            )
 
             total_sum += price
             total_count += 1
@@ -140,17 +211,58 @@ async def sales(update, context):
                 f"Сумма: {round(stats['sum'], 2)} ₽\n\n"
             )
 
-        await update.message.reply_text(text[:4000])
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                text[:4000]
+            )
+        else:
+            await update.message.reply_text(
+                text[:4000]
+            )
 
     except Exception as e:
-        await update.message.reply_text(f"Ошибка /sales: {e}")
+        error_text = f"Ошибка /sales: {e}"
+
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                error_text
+            )
+        else:
+            await update.message.reply_text(
+                error_text
+            )
+
+
+async def button_handler(update, context):
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "stocks":
+        await stocks(update, context)
+
+    elif query.data == "sales":
+        await sales(update, context)
 
 
 app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("stocks", stocks))
-app.add_handler(CommandHandler("sales", sales))
+app.add_handler(
+    CommandHandler("start", start)
+)
+
+app.add_handler(
+    CommandHandler("stocks", stocks)
+)
+
+app.add_handler(
+    CommandHandler("sales", sales)
+)
+
+app.add_handler(
+    CallbackQueryHandler(button_handler)
+)
 
 print("Бот запущен...")
+
 app.run_polling()

@@ -1,13 +1,17 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
+
 import requests
 import time
 import os
+import json
+import asyncio
 
 TOKEN = os.getenv("TOKEN")
 WB_TOKEN = os.getenv("WB_TOKEN")
 
-CACHE_SECONDS = 300
+CACHE_FILE = "stocks_cache.json"
+REFRESH_SECONDS = 900  # 15 минут
 LOW_STOCK_LIMIT = 5
 
 ARTICLE_GROUPS = [
@@ -29,38 +33,36 @@ ARTICLE_GROUPS = [
 
 stocks_cache = {
     "time": 0,
-    "data": None
+    "data": []
 }
 
 
-async def start(update, context):
-    keyboard = [
-        [InlineKeyboardButton("📦 Остатки по артикулам", callback_data="articles_menu")],
-        [InlineKeyboardButton("📦 Все остатки", callback_data="stocks")]
-    ]
+def save_cache():
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(stocks_cache, f, ensure_ascii=False)
 
-    await update.message.reply_text(
-        "WB Бот 24/7 🚀\n\nВыберите действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+
+def load_cache():
+    global stocks_cache
+
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            stocks_cache = json.load(f)
+    except FileNotFoundError:
+        stocks_cache = {
+            "time": 0,
+            "data": []
+        }
 
 
 def get_base_article(article):
-    # Важно: длинные артикулы проверяем первыми, чтобы 18298-1 не попал в 18298
     for group in sorted(ARTICLE_GROUPS, key=len, reverse=True):
         if article.startswith(group):
             return group
     return None
 
 
-def wb_get_stocks():
-    global stocks_cache
-
-    now = time.time()
-
-    if stocks_cache["data"] and now - stocks_cache["time"] < CACHE_SECONDS:
-        return stocks_cache["data"]
-
+def fetch_stocks_from_wb():
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
 
     headers = {
@@ -79,21 +81,74 @@ def wb_get_stocks():
     )
 
     if response.status_code == 429:
-        raise Exception("Слишком много запросов к WB. Подождите 5–10 минут.")
+        print("WB API: лимит запросов 429")
+        return None
 
     response.raise_for_status()
+    return response.json()
 
-    data = response.json()
 
-    stocks_cache["data"] = data
-    stocks_cache["time"] = now
+async def update_stocks_cache():
+    global stocks_cache
 
-    return data
+    data = await asyncio.to_thread(fetch_stocks_from_wb)
+
+    if data is None:
+        return False
+
+    stocks_cache = {
+        "time": time.time(),
+        "data": data
+    }
+
+    save_cache()
+
+    print("Остатки WB обновлены")
+    return True
+
+
+async def periodic_update(application):
+    load_cache()
+
+    await update_stocks_cache()
+
+    while True:
+        await asyncio.sleep(REFRESH_SECONDS)
+        await update_stocks_cache()
+
+
+async def post_init(application):
+    application.create_task(periodic_update(application))
+
+
+async def start(update, context):
+    keyboard = [
+        [InlineKeyboardButton("📦 Остатки по артикулам", callback_data="articles_menu")],
+        [InlineKeyboardButton("📦 Сводка остатков", callback_data="stocks_summary")],
+        [InlineKeyboardButton("🔄 Обновить из WB", callback_data="refresh_stocks")]
+    ]
+
+    await update.message.reply_text(
+        "WB Бот 24/7 🚀\n\nВыберите действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def main_menu(query):
+    keyboard = [
+        [InlineKeyboardButton("📦 Остатки по артикулам", callback_data="articles_menu")],
+        [InlineKeyboardButton("📦 Сводка остатков", callback_data="stocks_summary")],
+        [InlineKeyboardButton("🔄 Обновить из WB", callback_data="refresh_stocks")]
+    ]
+
+    await query.message.reply_text(
+        "Главное меню:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def articles_menu(update, context):
     keyboard = []
-
     row = []
 
     for article in ARTICLE_GROUPS:
@@ -111,127 +166,142 @@ async def articles_menu(update, context):
     if row:
         keyboard.append(row)
 
-    keyboard.append(
-        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")])
+
+    text = f"Выберите артикул.\nПокажу размеры/цвета, где остаток меньше {LOW_STOCK_LIMIT} шт."
+
+    await update.callback_query.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-    text = "Выберите артикул для проверки остатков меньше 5 шт:"
 
-    if update.callback_query:
+async def stocks_summary(update, context):
+    data = stocks_cache.get("data", [])
+
+    if not data:
         await update.callback_query.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "Кэш остатков пока пустой. Подождите обновления или нажмите 🔄 Обновить из WB."
         )
-    else:
-        await update.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        return
 
+    grouped = {}
 
-async def stocks(update, context):
-    try:
-        data = wb_get_stocks()
+    for item in data:
+        article = item.get("supplierArticle", "")
+        quantity = item.get("quantity", 0)
 
-        total = sum(item.get("quantity", 0) for item in data)
+        base = get_base_article(article)
 
-        grouped = {}
+        if not base:
+            continue
 
-        for item in data:
-            article = item.get("supplierArticle", "Без артикула")
-            quantity = item.get("quantity", 0)
+        grouped[base] = grouped.get(base, 0) + quantity
 
-            base = get_base_article(article)
+    total = sum(grouped.values())
 
-            if not base:
-                continue
+    updated_at = time.strftime(
+        "%d.%m.%Y %H:%M",
+        time.localtime(stocks_cache.get("time", 0))
+    )
 
-            grouped[base] = grouped.get(base, 0) + quantity
+    text = (
+        f"📦 Сводка остатков по 14 артикулам\n\n"
+        f"Всего: {total} шт\n"
+        f"Обновлено: {updated_at}\n\n"
+    )
 
-        text = f"📦 Остатки WB по 14 артикулам\n\nВсего: {total} шт\n\n"
+    for article in ARTICLE_GROUPS:
+        text += f"{article}: {grouped.get(article, 0)} шт\n"
 
-        for article in ARTICLE_GROUPS:
-            text += f"{article}: {grouped.get(article, 0)} шт\n"
-
-        if update.callback_query:
-            await update.callback_query.message.reply_text(text[:4000])
-        else:
-            await update.message.reply_text(text[:4000])
-
-    except Exception as e:
-        error_text = f"Ошибка /stocks: {e}"
-
-        if update.callback_query:
-            await update.callback_query.message.reply_text(error_text)
-        else:
-            await update.message.reply_text(error_text)
+    await update.callback_query.message.reply_text(text[:4000])
 
 
 async def article_detail(update, context, base_article):
-    try:
-        data = wb_get_stocks()
+    data = stocks_cache.get("data", [])
 
-        items = []
-
-        for item in data:
-            supplier_article = item.get("supplierArticle", "")
-            quantity = item.get("quantity", 0)
-
-            if get_base_article(supplier_article) != base_article:
-                continue
-
-            if quantity >= LOW_STOCK_LIMIT:
-                continue
-
-            items.append({
-                "article": supplier_article,
-                "quantity": quantity,
-                "barcode": item.get("barcode", "-"),
-                "size": item.get("techSize", "-"),
-                "warehouse": item.get("warehouseName", "-")
-            })
-
-        if not items:
-            text = (
-                f"✅ Артикул {base_article}\n\n"
-                f"Нет размеров/цветов с остатком меньше {LOW_STOCK_LIMIT} шт."
-            )
-        else:
-            items = sorted(
-                items,
-                key=lambda x: (x["quantity"], x["article"], x["size"])
-            )
-
-            text = (
-                f"⚠️ Артикул {base_article}\n"
-                f"Остатки меньше {LOW_STOCK_LIMIT} шт:\n\n"
-            )
-
-            for item in items[:40]:
-                text += (
-                    f"{item['article']}\n"
-                    f"Размер: {item['size']}\n"
-                    f"Баркод: {item['barcode']}\n"
-                    f"Остаток: {item['quantity']} шт\n"
-                    f"Склад: {item['warehouse']}\n\n"
-                )
-
-            if len(items) > 40:
-                text += f"Показано 40 из {len(items)} строк."
-
-        keyboard = [
-            [InlineKeyboardButton("⬅️ К артикулам", callback_data="articles_menu")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-        ]
-
+    if not data:
         await update.callback_query.message.reply_text(
-            text[:4000],
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "Кэш остатков пока пустой. Подождите обновления или нажмите 🔄 Обновить из WB."
+        )
+        return
+
+    items = []
+
+    for item in data:
+        supplier_article = item.get("supplierArticle", "")
+        quantity = item.get("quantity", 0)
+
+        if get_base_article(supplier_article) != base_article:
+            continue
+
+        if quantity >= LOW_STOCK_LIMIT:
+            continue
+
+        items.append({
+            "article": supplier_article,
+            "quantity": quantity,
+            "barcode": item.get("barcode", "-"),
+            "size": item.get("techSize", "-"),
+            "warehouse": item.get("warehouseName", "-")
+        })
+
+    updated_at = time.strftime(
+        "%d.%m.%Y %H:%M",
+        time.localtime(stocks_cache.get("time", 0))
+    )
+
+    if not items:
+        text = (
+            f"✅ Артикул {base_article}\n\n"
+            f"Нет размеров/цветов с остатком меньше {LOW_STOCK_LIMIT} шт.\n\n"
+            f"Обновлено: {updated_at}"
+        )
+    else:
+        items = sorted(
+            items,
+            key=lambda x: (x["quantity"], x["article"], x["size"])
         )
 
-    except Exception as e:
+        text = (
+            f"⚠️ Артикул {base_article}\n"
+            f"Остатки меньше {LOW_STOCK_LIMIT} шт\n"
+            f"Обновлено: {updated_at}\n\n"
+        )
+
+        for item in items[:40]:
+            text += (
+                f"{item['article']}\n"
+                f"Размер: {item['size']}\n"
+                f"Баркод: {item['barcode']}\n"
+                f"Остаток: {item['quantity']} шт\n"
+                f"Склад: {item['warehouse']}\n\n"
+            )
+
+        if len(items) > 40:
+            text += f"Показано 40 из {len(items)} строк."
+
+    keyboard = [
+        [InlineKeyboardButton("⬅️ К артикулам", callback_data="articles_menu")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+    ]
+
+    await update.callback_query.message.reply_text(
+        text[:4000],
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def refresh_stocks(update, context):
+    await update.callback_query.message.reply_text("🔄 Обновляю остатки из WB...")
+
+    ok = await update_stocks_cache()
+
+    if ok:
+        await update.callback_query.message.reply_text("✅ Остатки обновлены.")
+    else:
         await update.callback_query.message.reply_text(
-            f"Ошибка по артикулу {base_article}: {e}"
+            "⚠️ WB временно ограничил запросы. Показываю старые данные из кэша."
         )
 
 
@@ -240,31 +310,30 @@ async def button_handler(update, context):
     await query.answer()
 
     if query.data == "main_menu":
-        keyboard = [
-            [InlineKeyboardButton("📦 Остатки по артикулам", callback_data="articles_menu")],
-            [InlineKeyboardButton("📦 Все остатки", callback_data="stocks")]
-        ]
-
-        await query.message.reply_text(
-            "Главное меню:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await main_menu(query)
 
     elif query.data == "articles_menu":
         await articles_menu(update, context)
 
-    elif query.data == "stocks":
-        await stocks(update, context)
+    elif query.data == "stocks_summary":
+        await stocks_summary(update, context)
+
+    elif query.data == "refresh_stocks":
+        await refresh_stocks(update, context)
 
     elif query.data.startswith("article_"):
         base_article = query.data.replace("article_", "")
         await article_detail(update, context, base_article)
 
 
-app = ApplicationBuilder().token(TOKEN).build()
+app = (
+    ApplicationBuilder()
+    .token(TOKEN)
+    .post_init(post_init)
+    .build()
+)
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("stocks", stocks))
 app.add_handler(CallbackQueryHandler(button_handler))
 
 print("Бот запущен...")

@@ -128,6 +128,14 @@ def wb_request(token, url, params):
         print("WB API: лимит запросов 429")
         return None
 
+    if response.status_code == 401:
+        print("WB API: ошибка 401 Unauthorized")
+        return None
+
+    if response.status_code == 403:
+        print("WB API: ошибка 403 Forbidden")
+        return None
+
     response.raise_for_status()
     return response.json()
 
@@ -209,6 +217,7 @@ async def update_sales_cache(account_key):
     )
 
     print(f"Выкупы обновлены: {WB_ACCOUNTS[account_key]['name']}")
+    print(f"Строк выкупов: {len(data)}")
     return True
 
 
@@ -466,6 +475,56 @@ def build_stock_lookup(account_key):
     return lookup
 
 
+def get_raw_sales_count(account_filter):
+    if account_filter == "all":
+        return sum(
+            len(sales_cache.get(key, {"data": []}).get("data", []))
+            for key in WB_ACCOUNTS
+        )
+
+    return len(
+        sales_cache.get(account_filter, {"data": []}).get("data", [])
+    )
+
+
+def get_filtered_sales_count(account_filter):
+    if account_filter == "all":
+        account_keys = list(WB_ACCOUNTS.keys())
+    else:
+        account_keys = [account_filter]
+
+    count = 0
+
+    for account_key in account_keys:
+        cache = sales_cache.get(account_key, {"time": 0, "data": []})
+        data = cache.get("data", [])
+
+        for item in data:
+            article = item.get("supplierArticle", "")
+            base = get_base_article(article, account_key)
+
+            if base:
+                count += 1
+
+    return count
+
+
+def get_sales_updated_text(account_filter):
+    if account_filter == "all":
+        parts = []
+
+        for account_key, account in WB_ACCOUNTS.items():
+            cache = sales_cache.get(account_key, {"time": 0, "data": []})
+            parts.append(
+                f"{account['name']}: {format_time(cache.get('time', 0))}"
+            )
+
+        return "\n".join(parts)
+
+    cache = sales_cache.get(account_filter, {"time": 0, "data": []})
+    return format_time(cache.get("time", 0))
+
+
 def build_buyout_items(account_filter):
     grouped = {}
 
@@ -482,6 +541,12 @@ def build_buyout_items(account_filter):
 
         for item in data:
             article = item.get("supplierArticle", "Без артикула")
+
+            base = get_base_article(article, account_key)
+
+            if not base:
+                continue
+
             size = item.get("techSize", "-")
             barcode = item.get("barcode", "-")
 
@@ -525,6 +590,10 @@ def build_buyout_items(account_filter):
 async def sales_summary(update, context, account_filter):
     items = build_buyout_items(account_filter)
 
+    raw_count = get_raw_sales_count(account_filter)
+    filtered_count = get_filtered_sales_count(account_filter)
+    updated_text = get_sales_updated_text(account_filter)
+
     if account_filter == "all":
         title = "📊 Общие выкупы за 24 часа"
     else:
@@ -533,10 +602,18 @@ async def sales_summary(update, context, account_filter):
     total_sum = sum(x["sum"] for x in items)
     total_count = sum(x["count"] for x in items)
 
+    diagnostic_text = (
+        f"\n\n🔍 Диагностика:\n"
+        f"WB API вернул строк: {raw_count}\n"
+        f"После фильтрации по артикулам: {filtered_count}\n"
+        f"Обновлено:\n{updated_text}"
+    )
+
     if not items:
         text = (
             f"{title}\n\n"
             f"Выкупов за последние 24 часа не найдено."
+            f"{diagnostic_text}"
         )
     else:
         text = (
@@ -558,6 +635,8 @@ async def sales_summary(update, context, account_filter):
                 f"Выручка: {round(item['sum'], 2)} ₽\n"
                 f"Остаток: {item['stock']} шт{stock_warning}\n\n"
             )
+
+        text += diagnostic_text
 
     keyboard = [
         [InlineKeyboardButton("⬅️ К выкупам", callback_data="sales_menu")],

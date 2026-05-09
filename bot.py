@@ -38,7 +38,7 @@ ARTICLE_GROUPS = {
         "2372-1",
         "8801"
     ],
-     "second": [
+    "second": [
         "1997",
         "1997-1",
         "8269-1",
@@ -110,20 +110,6 @@ def get_base_article(article, account_key):
             return group
 
     return None
-
-
-def get_color_from_article(article, account_key):
-    base = get_base_article(article, account_key)
-
-    if not base:
-        return "-"
-
-    color = str(article).replace(base, "", 1)
-
-    if not color:
-        return "-"
-
-    return color.strip("-_ ")
 
 
 def wb_request(token, url, params):
@@ -347,7 +333,7 @@ async def articles_menu(update, context):
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")])
 
     await update.callback_query.message.reply_text(
-        f"Выберите артикул.\nПокажу цвета/размеры, где остаток меньше {LOW_STOCK_LIMIT} шт.",
+        f"Выберите артикул.\nПокажу размеры, где остаток меньше {LOW_STOCK_LIMIT} шт.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -413,7 +399,6 @@ async def article_detail(update, context, account_key, base_article):
 
         items.append({
             "article": supplier_article,
-            "color": get_color_from_article(supplier_article, account_key),
             "quantity": quantity,
             "barcode": item.get("barcode", "-"),
             "size": item.get("techSize", "-"),
@@ -424,7 +409,7 @@ async def article_detail(update, context, account_key, base_article):
         text = (
             f"✅ {account['name']}\n"
             f"Артикул {base_article}\n\n"
-            f"Нет цветов/размеров с остатком меньше {LOW_STOCK_LIMIT} шт.\n\n"
+            f"Нет размеров с остатком меньше {LOW_STOCK_LIMIT} шт.\n\n"
             f"Обновлено: {format_time(cache.get('time', 0))}"
         )
     else:
@@ -443,7 +428,6 @@ async def article_detail(update, context, account_key, base_article):
         for item in items[:40]:
             text += (
                 f"{item['article']}\n"
-                f"Цвет: {item['color']}\n"
                 f"Размер: {item['size']}\n"
                 f"Баркод: {item['barcode']}\n"
                 f"Остаток: {item['quantity']} шт\n"
@@ -485,8 +469,6 @@ def build_stock_lookup(account_key):
 def build_buyout_items(account_filter):
     grouped = {}
 
-    account_keys = []
-
     if account_filter == "all":
         account_keys = list(WB_ACCOUNTS.keys())
     else:
@@ -510,7 +492,6 @@ def build_buyout_items(account_filter):
                 or 0
             )
 
-            color = get_color_from_article(article, account_key)
             stock_qty = stock_lookup.get((article, size, barcode), 0)
 
             key = (
@@ -524,7 +505,6 @@ def build_buyout_items(account_filter):
                 grouped[key] = {
                     "account": account["name"],
                     "article": article,
-                    "color": color,
                     "size": size,
                     "barcode": barcode,
                     "count": 0,
@@ -572,7 +552,6 @@ async def sales_summary(update, context, account_filter):
             text += (
                 f"{index}. {item['article']}\n"
                 f"Кабинет: {item['account']}\n"
-                f"Цвет: {item['color']}\n"
                 f"Размер: {item['size']}\n"
                 f"Баркод: {item['barcode']}\n"
                 f"Выкуплено: {item['count']} шт\n"

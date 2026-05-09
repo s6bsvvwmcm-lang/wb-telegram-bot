@@ -12,11 +12,11 @@ TOKEN = os.getenv("TOKEN")
 
 WB_ACCOUNTS = {
     "main": {
-        "name": "Кабинет 1",
+        "name": "Кабинет Эльвиры",
         "token": os.getenv("WB_TOKEN_MAIN")
     },
     "second": {
-        "name": "Кабинет 2",
+        "name": "Кабинет Рината",
         "token": os.getenv("WB_TOKEN_SECOND")
     }
 }

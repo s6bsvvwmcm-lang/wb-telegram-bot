@@ -9,13 +9,20 @@ import asyncio
 from datetime import datetime, timedelta
 
 TOKEN = os.getenv("TOKEN")
-WB_TOKEN = os.getenv("WB_TOKEN")
 
-STOCKS_CACHE_FILE = "stocks_cache.json"
-SALES_CACHE_FILE = "sales_cache.json"
+WB_ACCOUNTS = {
+    "main": {
+        "name": "Кабинет 1",
+        "token": os.getenv("WB_TOKEN_MAIN")
+    },
+    "second": {
+        "name": "Кабинет 2",
+        "token": os.getenv("WB_TOKEN_SECOND")
+    }
+}
 
-STOCKS_REFRESH_SECONDS = 900      # 15 минут
-SALES_REFRESH_SECONDS = 3600      # 1 час
+STOCKS_REFRESH_SECONDS = 900
+SALES_REFRESH_SECONDS = 3600
 
 LOW_STOCK_LIMIT = 5
 TOP_SALES_LIMIT = 20
@@ -37,15 +44,12 @@ ARTICLE_GROUPS = [
     "8801"
 ]
 
-stocks_cache = {
-    "time": 0,
-    "data": []
-}
+stocks_cache = {}
+sales_cache = {}
 
-sales_cache = {
-    "time": 0,
-    "data": []
-}
+
+def cache_file(data_type, account_key):
+    return f"{data_type}_cache_{account_key}.json"
 
 
 def save_json(filename, data):
@@ -64,14 +68,25 @@ def load_json(filename, default):
 def load_all_cache():
     global stocks_cache, sales_cache
 
-    stocks_cache = load_json(
-        STOCKS_CACHE_FILE,
-        {"time": 0, "data": []}
-    )
+    for account_key in WB_ACCOUNTS:
+        stocks_cache[account_key] = load_json(
+            cache_file("stocks", account_key),
+            {"time": 0, "data": []}
+        )
 
-    sales_cache = load_json(
-        SALES_CACHE_FILE,
-        {"time": 0, "data": []}
+        sales_cache[account_key] = load_json(
+            cache_file("sales", account_key),
+            {"time": 0, "data": []}
+        )
+
+
+def format_time(timestamp):
+    if not timestamp:
+        return "нет данных"
+
+    return time.strftime(
+        "%d.%m.%Y %H:%M",
+        time.localtime(timestamp)
     )
 
 
@@ -96,9 +111,9 @@ def get_color_from_article(article):
     return color.strip("-_ ")
 
 
-def wb_request(url, params):
+def wb_request(token, url, params):
     headers = {
-        "Authorization": WB_TOKEN
+        "Authorization": token
     }
 
     response = requests.get(
@@ -116,17 +131,31 @@ def wb_request(url, params):
     return response.json()
 
 
-def fetch_stocks_from_wb():
+def fetch_stocks_from_wb(account_key):
+    account = WB_ACCOUNTS[account_key]
+    token = account["token"]
+
+    if not token:
+        print(f"Нет токена для {account_key}")
+        return None
+
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
 
     params = {
         "dateFrom": "2024-01-01T00:00:00"
     }
 
-    return wb_request(url, params)
+    return wb_request(token, url, params)
 
 
-def fetch_sales_from_wb():
+def fetch_sales_from_wb(account_key):
+    account = WB_ACCOUNTS[account_key]
+    token = account["token"]
+
+    if not token:
+        print(f"Нет токена для {account_key}")
+        return None
+
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
 
     date_from = (
@@ -137,52 +166,78 @@ def fetch_sales_from_wb():
         "dateFrom": date_from
     }
 
-    return wb_request(url, params)
+    return wb_request(token, url, params)
 
 
-async def update_stocks_cache():
+async def update_stocks_cache(account_key):
     global stocks_cache
 
-    data = await asyncio.to_thread(fetch_stocks_from_wb)
+    data = await asyncio.to_thread(fetch_stocks_from_wb, account_key)
 
     if data is None:
         return False
 
-    stocks_cache = {
+    stocks_cache[account_key] = {
         "time": time.time(),
         "data": data
     }
 
-    save_json(STOCKS_CACHE_FILE, stocks_cache)
+    save_json(
+        cache_file("stocks", account_key),
+        stocks_cache[account_key]
+    )
 
-    print("Остатки WB обновлены")
+    print(f"Остатки обновлены: {WB_ACCOUNTS[account_key]['name']}")
     return True
 
 
-async def update_sales_cache():
+async def update_sales_cache(account_key):
     global sales_cache
 
-    data = await asyncio.to_thread(fetch_sales_from_wb)
+    data = await asyncio.to_thread(fetch_sales_from_wb, account_key)
 
     if data is None:
         return False
 
-    sales_cache = {
+    sales_cache[account_key] = {
         "time": time.time(),
         "data": data
     }
 
-    save_json(SALES_CACHE_FILE, sales_cache)
+    save_json(
+        cache_file("sales", account_key),
+        sales_cache[account_key]
+    )
 
-    print("Продажи WB обновлены")
+    print(f"Продажи обновлены: {WB_ACCOUNTS[account_key]['name']}")
     return True
+
+
+async def update_all_stocks():
+    results = []
+
+    for account_key in WB_ACCOUNTS:
+        ok = await update_stocks_cache(account_key)
+        results.append(ok)
+
+    return any(results)
+
+
+async def update_all_sales():
+    results = []
+
+    for account_key in WB_ACCOUNTS:
+        ok = await update_sales_cache(account_key)
+        results.append(ok)
+
+    return any(results)
 
 
 async def periodic_update(application):
     load_all_cache()
 
-    await update_stocks_cache()
-    await update_sales_cache()
+    await update_all_stocks()
+    await update_all_sales()
 
     last_stocks_update = time.time()
     last_sales_update = time.time()
@@ -193,11 +248,11 @@ async def periodic_update(application):
         now = time.time()
 
         if now - last_stocks_update >= STOCKS_REFRESH_SECONDS:
-            await update_stocks_cache()
+            await update_all_stocks()
             last_stocks_update = now
 
         if now - last_sales_update >= SALES_REFRESH_SECONDS:
-            await update_sales_cache()
+            await update_all_sales()
             last_sales_update = now
 
 
@@ -205,43 +260,27 @@ async def post_init(application):
     application.create_task(periodic_update(application))
 
 
-def format_time(timestamp):
-    if not timestamp:
-        return "нет данных"
-
-    return time.strftime(
-        "%d.%m.%Y %H:%M",
-        time.localtime(timestamp)
-    )
-
-
-async def start(update, context):
-    keyboard = [
+def main_keyboard():
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("📦 Остатки по артикулам", callback_data="articles_menu")],
         [InlineKeyboardButton("📦 Сводка остатков", callback_data="stocks_summary")],
         [InlineKeyboardButton("💰 Продажи ТОП-20", callback_data="sales_summary")],
         [InlineKeyboardButton("🔄 Обновить остатки", callback_data="refresh_stocks")],
         [InlineKeyboardButton("🔄 Обновить продажи", callback_data="refresh_sales")]
-    ]
+    ])
 
+
+async def start(update, context):
     await update.message.reply_text(
         "WB Бот 24/7 🚀\n\nВыберите действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=main_keyboard()
     )
 
 
 async def main_menu(query):
-    keyboard = [
-        [InlineKeyboardButton("📦 Остатки по артикулам", callback_data="articles_menu")],
-        [InlineKeyboardButton("📦 Сводка остатков", callback_data="stocks_summary")],
-        [InlineKeyboardButton("💰 Продажи ТОП-20", callback_data="sales_summary")],
-        [InlineKeyboardButton("🔄 Обновить остатки", callback_data="refresh_stocks")],
-        [InlineKeyboardButton("🔄 Обновить продажи", callback_data="refresh_sales")]
-    ]
-
     await query.message.reply_text(
         "Главное меню:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=main_keyboard()
     )
 
 
@@ -266,44 +305,47 @@ async def articles_menu(update, context):
 
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")])
 
-    text = f"Выберите артикул.\nПокажу цвета/размеры, где остаток меньше {LOW_STOCK_LIMIT} шт."
-
     await update.callback_query.message.reply_text(
-        text,
+        f"Выберите артикул.\nПокажу цвета/размеры, где остаток меньше {LOW_STOCK_LIMIT} шт.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def stocks_summary(update, context):
-    data = stocks_cache.get("data", [])
-
-    if not data:
-        await update.callback_query.message.reply_text(
-            "Кэш остатков пока пустой. Подождите обновления или нажмите 🔄 Обновить остатки."
-        )
-        return
-
     grouped = {}
+    total_all = 0
 
-    for item in data:
-        article = item.get("supplierArticle", "")
-        quantity = item.get("quantity", 0)
+    text = "📦 Сводка остатков по 14 артикулам\n\n"
 
-        base = get_base_article(article)
+    for account_key, account in WB_ACCOUNTS.items():
+        cache = stocks_cache.get(account_key, {"time": 0, "data": []})
+        data = cache.get("data", [])
 
-        if not base:
-            continue
+        text += f"🏬 {account['name']}\n"
+        text += f"Обновлено: {format_time(cache.get('time', 0))}\n"
 
-        grouped[base] = grouped.get(base, 0) + quantity
+        account_grouped = {}
 
-    total = sum(grouped.values())
-    updated_at = format_time(stocks_cache.get("time", 0))
+        for item in data:
+            article = item.get("supplierArticle", "")
+            quantity = item.get("quantity", 0)
+            base = get_base_article(article)
 
-    text = (
-        f"📦 Сводка остатков по 14 артикулам\n\n"
-        f"Всего: {total} шт\n"
-        f"Обновлено: {updated_at}\n\n"
-    )
+            if not base:
+                continue
+
+            account_grouped[base] = account_grouped.get(base, 0) + quantity
+            grouped[base] = grouped.get(base, 0) + quantity
+            total_all += quantity
+
+        for article in ARTICLE_GROUPS:
+            text += f"{article}: {account_grouped.get(article, 0)} шт\n"
+
+        text += "\n"
+
+    text += f"✅ Итого по двум кабинетам: {total_all} шт\n\n"
+
+    text += "📌 Общий итог по артикулам:\n"
 
     for article in ARTICLE_GROUPS:
         text += f"{article}: {grouped.get(article, 0)} шт\n"
@@ -312,42 +354,36 @@ async def stocks_summary(update, context):
 
 
 async def article_detail(update, context, base_article):
-    data = stocks_cache.get("data", [])
-
-    if not data:
-        await update.callback_query.message.reply_text(
-            "Кэш остатков пока пустой. Подождите обновления или нажмите 🔄 Обновить остатки."
-        )
-        return
-
     items = []
 
-    for item in data:
-        supplier_article = item.get("supplierArticle", "")
-        quantity = item.get("quantity", 0)
+    for account_key, account in WB_ACCOUNTS.items():
+        cache = stocks_cache.get(account_key, {"time": 0, "data": []})
+        data = cache.get("data", [])
 
-        if get_base_article(supplier_article) != base_article:
-            continue
+        for item in data:
+            supplier_article = item.get("supplierArticle", "")
+            quantity = item.get("quantity", 0)
 
-        if quantity >= LOW_STOCK_LIMIT:
-            continue
+            if get_base_article(supplier_article) != base_article:
+                continue
 
-        items.append({
-            "article": supplier_article,
-            "color": get_color_from_article(supplier_article),
-            "quantity": quantity,
-            "barcode": item.get("barcode", "-"),
-            "size": item.get("techSize", "-"),
-            "warehouse": item.get("warehouseName", "-")
-        })
+            if quantity >= LOW_STOCK_LIMIT:
+                continue
 
-    updated_at = format_time(stocks_cache.get("time", 0))
+            items.append({
+                "account": account["name"],
+                "article": supplier_article,
+                "color": get_color_from_article(supplier_article),
+                "quantity": quantity,
+                "barcode": item.get("barcode", "-"),
+                "size": item.get("techSize", "-"),
+                "warehouse": item.get("warehouseName", "-")
+            })
 
     if not items:
         text = (
             f"✅ Артикул {base_article}\n\n"
-            f"Нет цветов/размеров с остатком меньше {LOW_STOCK_LIMIT} шт.\n\n"
-            f"Обновлено: {updated_at}"
+            f"Нет цветов/размеров с остатком меньше {LOW_STOCK_LIMIT} шт."
         )
     else:
         items = sorted(
@@ -357,12 +393,12 @@ async def article_detail(update, context, base_article):
 
         text = (
             f"⚠️ Артикул {base_article}\n"
-            f"Остатки меньше {LOW_STOCK_LIMIT} шт\n"
-            f"Обновлено: {updated_at}\n\n"
+            f"Остатки меньше {LOW_STOCK_LIMIT} шт по двум кабинетам:\n\n"
         )
 
         for item in items[:40]:
             text += (
+                f"🏬 {item['account']}\n"
                 f"{item['article']}\n"
                 f"Цвет: {item['color']}\n"
                 f"Размер: {item['size']}\n"
@@ -386,48 +422,44 @@ async def article_detail(update, context, base_article):
 
 
 async def sales_summary(update, context):
-    data = sales_cache.get("data", [])
-
-    if not data:
-        await update.callback_query.message.reply_text(
-            "Кэш продаж пока пустой. Подождите обновления или нажмите 🔄 Обновить продажи."
-        )
-        return
-
     grouped = {}
 
-    for item in data:
-        article = item.get("supplierArticle", "Без артикула")
-        base = get_base_article(article)
+    for account_key, account in WB_ACCOUNTS.items():
+        cache = sales_cache.get(account_key, {"time": 0, "data": []})
+        data = cache.get("data", [])
 
-        if not base:
-            continue
+        for item in data:
+            article = item.get("supplierArticle", "Без артикула")
+            base = get_base_article(article)
 
-        size = item.get("techSize", "-")
-        barcode = item.get("barcode", "-")
-        color = get_color_from_article(article)
+            if not base:
+                continue
 
-        key = (article, color, size, barcode)
+            size = item.get("techSize", "-")
+            barcode = item.get("barcode", "-")
+            color = get_color_from_article(article)
 
-        price = (
-            item.get("finishedPrice")
-            or item.get("forPay")
-            or item.get("totalPrice")
-            or 0
-        )
+            key = (article, color, size, barcode)
 
-        if key not in grouped:
-            grouped[key] = {
-                "article": article,
-                "color": color,
-                "size": size,
-                "barcode": barcode,
-                "count": 0,
-                "sum": 0
-            }
+            price = (
+                item.get("finishedPrice")
+                or item.get("forPay")
+                or item.get("totalPrice")
+                or 0
+            )
 
-        grouped[key]["count"] += 1
-        grouped[key]["sum"] += price
+            if key not in grouped:
+                grouped[key] = {
+                    "article": article,
+                    "color": color,
+                    "size": size,
+                    "barcode": barcode,
+                    "count": 0,
+                    "sum": 0
+                }
+
+            grouped[key]["count"] += 1
+            grouped[key]["sum"] += price
 
     items = sorted(
         grouped.values(),
@@ -437,11 +469,9 @@ async def sales_summary(update, context):
 
     total_sum = sum(x["sum"] for x in items)
     total_count = sum(x["count"] for x in items)
-    updated_at = format_time(sales_cache.get("time", 0))
 
     text = (
-        f"💰 Продажи WB за 24 часа\n"
-        f"Обновлено: {updated_at}\n\n"
+        f"💰 Продажи WB за 24 часа по двум кабинетам\n\n"
         f"Сумма продаж: {round(total_sum, 2)} ₽\n"
         f"Количество продаж: {total_count}\n\n"
         f"🔥 ТОП-{TOP_SALES_LIMIT} позиций:\n\n"
@@ -458,18 +488,15 @@ async def sales_summary(update, context):
         )
 
     if not items:
-        text = (
-            f"Продаж по выбранным 14 артикулам за последние 24 часа не найдено.\n"
-            f"Обновлено: {updated_at}"
-        )
+        text = "Продаж по выбранным артикулам за последние 24 часа не найдено."
 
     await update.callback_query.message.reply_text(text[:4000])
 
 
 async def refresh_stocks(update, context):
-    await update.callback_query.message.reply_text("🔄 Обновляю остатки из WB...")
+    await update.callback_query.message.reply_text("🔄 Обновляю остатки по двум кабинетам...")
 
-    ok = await update_stocks_cache()
+    ok = await update_all_stocks()
 
     if ok:
         await update.callback_query.message.reply_text("✅ Остатки обновлены.")
@@ -480,9 +507,9 @@ async def refresh_stocks(update, context):
 
 
 async def refresh_sales(update, context):
-    await update.callback_query.message.reply_text("🔄 Обновляю продажи из WB...")
+    await update.callback_query.message.reply_text("🔄 Обновляю продажи по двум кабинетам...")
 
-    ok = await update_sales_cache()
+    ok = await update_all_sales()
 
     if ok:
         await update.callback_query.message.reply_text("✅ Продажи обновлены.")

@@ -53,6 +53,8 @@ ARTICLE_GROUPS = {
 STOCKS_REFRESH_SECONDS = 900
 SALES_REFRESH_SECONDS = 3600
 
+SALES_PERIOD_DAYS = 7
+
 LOW_STOCK_LIMIT = 5
 TOP_SALES_LIMIT = 10
 
@@ -166,7 +168,7 @@ def fetch_sales_from_wb(account_key):
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
 
     date_from = (
-        datetime.now() - timedelta(days=1)
+        datetime.now() - timedelta(days=SALES_PERIOD_DAYS)
     ).strftime("%Y-%m-%dT00:00:00")
 
     params = {
@@ -595,9 +597,9 @@ async def sales_summary(update, context, account_filter):
     updated_text = get_sales_updated_text(account_filter)
 
     if account_filter == "all":
-        title = "📊 Общие выкупы за 24 часа"
+        title = f"📊 Общие выкупы за {SALES_PERIOD_DAYS} дней"
     else:
-        title = f"💰 Выкупы за 24 часа\n{WB_ACCOUNTS[account_filter]['name']}"
+        title = f"💰 Выкупы за {SALES_PERIOD_DAYS} дней\n{WB_ACCOUNTS[account_filter]['name']}"
 
     total_sum = sum(x["sum"] for x in items)
     total_count = sum(x["count"] for x in items)
@@ -612,7 +614,7 @@ async def sales_summary(update, context, account_filter):
     if not items:
         text = (
             f"{title}\n\n"
-            f"Выкупов за последние 24 часа не найдено."
+            f"Выкупов за последние {SALES_PERIOD_DAYS} дней не найдено."
             f"{diagnostic_text}"
         )
     else:

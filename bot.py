@@ -21,28 +21,40 @@ WB_ACCOUNTS = {
     }
 }
 
+ARTICLE_GROUPS = {
+    "main": [
+        "18298",
+        "6758",
+        "18298-1",
+        "18892",
+        "18321",
+        "18047",
+        "2372",
+        "18688",
+        "18550-1",
+        "2371-1",
+        "18550",
+        "550",
+        "2372-1",
+        "8801"
+    ],
+    "second": [
+        "1997",
+        "1997-1",
+        "8269-1",
+        "8269",
+        "18816",
+        "118502",
+        "2136",
+        "18295",
+    ]
+}
+
 STOCKS_REFRESH_SECONDS = 900
 SALES_REFRESH_SECONDS = 3600
 
 LOW_STOCK_LIMIT = 5
 TOP_SALES_LIMIT = 20
-
-ARTICLE_GROUPS = [
-    "18298",
-    "6758",
-    "18298-1",
-    "18892",
-    "18321",
-    "18047",
-    "2372",
-    "18688",
-    "18550-1",
-    "2371-1",
-    "18550",
-    "550",
-    "2372-1",
-    "8801"
-]
 
 stocks_cache = {}
 sales_cache = {}
@@ -90,15 +102,18 @@ def format_time(timestamp):
     )
 
 
-def get_base_article(article):
-    for group in sorted(ARTICLE_GROUPS, key=len, reverse=True):
+def get_base_article(article, account_key):
+    groups = ARTICLE_GROUPS.get(account_key, [])
+
+    for group in sorted(groups, key=len, reverse=True):
         if article.startswith(group):
             return group
+
     return None
 
 
-def get_color_from_article(article):
-    base = get_base_article(article)
+def get_color_from_article(article, account_key):
+    base = get_base_article(article, account_key)
 
     if not base:
         return "-"
@@ -109,6 +124,16 @@ def get_color_from_article(article):
         return "-"
 
     return color.strip("-_ ")
+
+
+def get_all_articles():
+    result = []
+
+    for account_key, articles in ARTICLE_GROUPS.items():
+        for article in articles:
+            result.append((account_key, article))
+
+    return result
 
 
 def wb_request(token, url, params):
@@ -132,8 +157,7 @@ def wb_request(token, url, params):
 
 
 def fetch_stocks_from_wb(account_key):
-    account = WB_ACCOUNTS[account_key]
-    token = account["token"]
+    token = WB_ACCOUNTS[account_key]["token"]
 
     if not token:
         print(f"Нет токена для {account_key}")
@@ -149,8 +173,7 @@ def fetch_stocks_from_wb(account_key):
 
 
 def fetch_sales_from_wb(account_key):
-    account = WB_ACCOUNTS[account_key]
-    token = account["token"]
+    token = WB_ACCOUNTS[account_key]["token"]
 
     if not token:
         print(f"Нет токена для {account_key}")
@@ -286,22 +309,36 @@ async def main_menu(query):
 
 async def articles_menu(update, context):
     keyboard = []
-    row = []
 
-    for article in ARTICLE_GROUPS:
-        row.append(
+    for account_key, account in WB_ACCOUNTS.items():
+        articles = ARTICLE_GROUPS.get(account_key, [])
+
+        if not articles:
+            continue
+
+        keyboard.append([
             InlineKeyboardButton(
-                article,
-                callback_data=f"article_{article}"
+                f"🏬 {account['name']}",
+                callback_data=f"noop_{account_key}"
             )
-        )
+        ])
 
-        if len(row) == 2:
+        row = []
+
+        for article in articles:
+            row.append(
+                InlineKeyboardButton(
+                    article,
+                    callback_data=f"article_{account_key}_{article}"
+                )
+            )
+
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+
+        if row:
             keyboard.append(row)
-            row = []
-
-    if row:
-        keyboard.append(row)
 
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")])
 
@@ -312,78 +349,79 @@ async def articles_menu(update, context):
 
 
 async def stocks_summary(update, context):
-    grouped = {}
+    text = "📦 Сводка остатков\n\n"
     total_all = 0
-
-    text = "📦 Сводка остатков по 14 артикулам\n\n"
 
     for account_key, account in WB_ACCOUNTS.items():
         cache = stocks_cache.get(account_key, {"time": 0, "data": []})
         data = cache.get("data", [])
-
-        text += f"🏬 {account['name']}\n"
-        text += f"Обновлено: {format_time(cache.get('time', 0))}\n"
+        articles = ARTICLE_GROUPS.get(account_key, [])
 
         account_grouped = {}
+        account_total = 0
 
         for item in data:
             article = item.get("supplierArticle", "")
             quantity = item.get("quantity", 0)
-            base = get_base_article(article)
+            base = get_base_article(article, account_key)
 
             if not base:
                 continue
 
             account_grouped[base] = account_grouped.get(base, 0) + quantity
-            grouped[base] = grouped.get(base, 0) + quantity
+            account_total += quantity
             total_all += quantity
 
-        for article in ARTICLE_GROUPS:
+        text += f"🏬 {account['name']}\n"
+        text += f"Обновлено: {format_time(cache.get('time', 0))}\n"
+        text += f"Итого: {account_total} шт\n"
+
+        if not articles:
+            text += "Артикулы не добавлены\n\n"
+            continue
+
+        for article in articles:
             text += f"{article}: {account_grouped.get(article, 0)} шт\n"
 
         text += "\n"
 
-    text += f"✅ Итого по двум кабинетам: {total_all} шт\n\n"
-
-    text += "📌 Общий итог по артикулам:\n"
-
-    for article in ARTICLE_GROUPS:
-        text += f"{article}: {grouped.get(article, 0)} шт\n"
+    text += f"✅ Общий итог: {total_all} шт"
 
     await update.callback_query.message.reply_text(text[:4000])
 
 
-async def article_detail(update, context, base_article):
+async def article_detail(update, context, account_key, base_article):
+    account = WB_ACCOUNTS[account_key]
+    cache = stocks_cache.get(account_key, {"time": 0, "data": []})
+    data = cache.get("data", [])
+
     items = []
 
-    for account_key, account in WB_ACCOUNTS.items():
-        cache = stocks_cache.get(account_key, {"time": 0, "data": []})
-        data = cache.get("data", [])
+    for item in data:
+        supplier_article = item.get("supplierArticle", "")
+        quantity = item.get("quantity", 0)
 
-        for item in data:
-            supplier_article = item.get("supplierArticle", "")
-            quantity = item.get("quantity", 0)
+        if get_base_article(supplier_article, account_key) != base_article:
+            continue
 
-            if get_base_article(supplier_article) != base_article:
-                continue
+        if quantity >= LOW_STOCK_LIMIT:
+            continue
 
-            if quantity >= LOW_STOCK_LIMIT:
-                continue
-
-            items.append({
-                "account": account["name"],
-                "article": supplier_article,
-                "color": get_color_from_article(supplier_article),
-                "quantity": quantity,
-                "barcode": item.get("barcode", "-"),
-                "size": item.get("techSize", "-"),
-                "warehouse": item.get("warehouseName", "-")
-            })
+        items.append({
+            "article": supplier_article,
+            "color": get_color_from_article(supplier_article, account_key),
+            "quantity": quantity,
+            "barcode": item.get("barcode", "-"),
+            "size": item.get("techSize", "-"),
+            "warehouse": item.get("warehouseName", "-")
+        })
 
     if not items:
         text = (
-            f"✅ Артикул {base_article}\n\n"
-            f"Нет цветов/размеров с остатком меньше {LOW_STOCK_LIMIT} шт."
+            f"✅ {account['name']}\n"
+            f"Артикул {base_article}\n\n"
+            f"Нет цветов/размеров с остатком меньше {LOW_STOCK_LIMIT} шт.\n\n"
+            f"Обновлено: {format_time(cache.get('time', 0))}"
         )
     else:
         items = sorted(
@@ -392,13 +430,14 @@ async def article_detail(update, context, base_article):
         )
 
         text = (
-            f"⚠️ Артикул {base_article}\n"
-            f"Остатки меньше {LOW_STOCK_LIMIT} шт по двум кабинетам:\n\n"
+            f"⚠️ {account['name']}\n"
+            f"Артикул {base_article}\n"
+            f"Остатки меньше {LOW_STOCK_LIMIT} шт\n"
+            f"Обновлено: {format_time(cache.get('time', 0))}\n\n"
         )
 
         for item in items[:40]:
             text += (
-                f"🏬 {item['account']}\n"
                 f"{item['article']}\n"
                 f"Цвет: {item['color']}\n"
                 f"Размер: {item['size']}\n"
@@ -430,16 +469,22 @@ async def sales_summary(update, context):
 
         for item in data:
             article = item.get("supplierArticle", "Без артикула")
-            base = get_base_article(article)
+            base = get_base_article(article, account_key)
 
             if not base:
                 continue
 
             size = item.get("techSize", "-")
             barcode = item.get("barcode", "-")
-            color = get_color_from_article(article)
+            color = get_color_from_article(article, account_key)
 
-            key = (article, color, size, barcode)
+            key = (
+                account_key,
+                article,
+                color,
+                size,
+                barcode
+            )
 
             price = (
                 item.get("finishedPrice")
@@ -450,6 +495,7 @@ async def sales_summary(update, context):
 
             if key not in grouped:
                 grouped[key] = {
+                    "account": account["name"],
                     "article": article,
                     "color": color,
                     "size": size,
@@ -470,31 +516,32 @@ async def sales_summary(update, context):
     total_sum = sum(x["sum"] for x in items)
     total_count = sum(x["count"] for x in items)
 
-    text = (
-        f"💰 Продажи WB за 24 часа по двум кабинетам\n\n"
-        f"Сумма продаж: {round(total_sum, 2)} ₽\n"
-        f"Количество продаж: {total_count}\n\n"
-        f"🔥 ТОП-{TOP_SALES_LIMIT} позиций:\n\n"
-    )
-
-    for index, item in enumerate(items[:TOP_SALES_LIMIT], start=1):
-        text += (
-            f"{index}. {item['article']}\n"
-            f"Цвет: {item['color']}\n"
-            f"Размер: {item['size']}\n"
-            f"Баркод: {item['barcode']}\n"
-            f"Продаж: {item['count']} шт\n"
-            f"Сумма: {round(item['sum'], 2)} ₽\n\n"
-        )
-
     if not items:
         text = "Продаж по выбранным артикулам за последние 24 часа не найдено."
+    else:
+        text = (
+            f"💰 Продажи WB за 24 часа\n\n"
+            f"Сумма продаж: {round(total_sum, 2)} ₽\n"
+            f"Количество продаж: {total_count}\n\n"
+            f"🔥 ТОП-{TOP_SALES_LIMIT} позиций:\n\n"
+        )
+
+        for index, item in enumerate(items[:TOP_SALES_LIMIT], start=1):
+            text += (
+                f"{index}. {item['article']}\n"
+                f"Кабинет: {item['account']}\n"
+                f"Цвет: {item['color']}\n"
+                f"Размер: {item['size']}\n"
+                f"Баркод: {item['barcode']}\n"
+                f"Продаж: {item['count']} шт\n"
+                f"Сумма: {round(item['sum'], 2)} ₽\n\n"
+            )
 
     await update.callback_query.message.reply_text(text[:4000])
 
 
 async def refresh_stocks(update, context):
-    await update.callback_query.message.reply_text("🔄 Обновляю остатки по двум кабинетам...")
+    await update.callback_query.message.reply_text("🔄 Обновляю остатки по кабинетам...")
 
     ok = await update_all_stocks()
 
@@ -507,7 +554,7 @@ async def refresh_stocks(update, context):
 
 
 async def refresh_sales(update, context):
-    await update.callback_query.message.reply_text("🔄 Обновляю продажи по двум кабинетам...")
+    await update.callback_query.message.reply_text("🔄 Обновляю продажи по кабинетам...")
 
     ok = await update_all_sales()
 
@@ -542,8 +589,13 @@ async def button_handler(update, context):
         await refresh_sales(update, context)
 
     elif query.data.startswith("article_"):
-        base_article = query.data.replace("article_", "")
-        await article_detail(update, context, base_article)
+        parts = query.data.split("_", 2)
+        account_key = parts[1]
+        base_article = parts[2]
+        await article_detail(update, context, account_key, base_article)
+
+    elif query.data.startswith("noop_"):
+        await query.message.reply_text("Выберите артикул ниже.")
 
 
 app = (

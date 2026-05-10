@@ -33,10 +33,6 @@ ARTICLE_GROUPS = {
     ]
 }
 
-STOCKS_REFRESH_SECONDS = 900
-SALES_REFRESH_SECONDS = 3600
-REQUEST_DELAY_SECONDS = 30
-
 SALES_PERIOD_DAYS = 7
 LOW_STOCK_LIMIT = 5
 TOP_SALES_LIMIT = 10
@@ -70,6 +66,7 @@ def load_all_cache():
             cache_file("stocks", account_key),
             {"time": 0, "data": []}
         )
+
         sales_cache[account_key] = load_json(
             cache_file("sales", account_key),
             {"time": 0, "data": []}
@@ -94,7 +91,9 @@ def get_base_article(article, account_key):
 
 
 def wb_request(token, url, params):
-    headers = {"Authorization": token}
+    headers = {
+        "Authorization": token
+    }
 
     response = requests.get(
         url,
@@ -104,27 +103,44 @@ def wb_request(token, url, params):
     )
 
     if response.status_code == 429:
-        print("WB API: лимит запросов 429")
-        return None
+        return {
+            "ok": False,
+            "error": "429 Too Many Requests — WB ограничил частые запросы"
+        }
 
     if response.status_code == 401:
-        print("WB API: ошибка 401 Unauthorized")
-        return None
+        return {
+            "ok": False,
+            "error": "401 Unauthorized — неверный токен"
+        }
 
     if response.status_code == 403:
-        print("WB API: ошибка 403 Forbidden")
-        return None
+        return {
+            "ok": False,
+            "error": "403 Forbidden — у токена нет нужного доступа"
+        }
 
-    response.raise_for_status()
-    return response.json()
+    try:
+        response.raise_for_status()
+        return {
+            "ok": True,
+            "data": response.json()
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 
 def fetch_stocks_from_wb(account_key):
     token = WB_ACCOUNTS[account_key]["token"]
 
     if not token:
-        print(f"Нет токена для {account_key}")
-        return None
+        return {
+            "ok": False,
+            "error": f"Нет токена для {WB_ACCOUNTS[account_key]['name']}"
+        }
 
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
 
@@ -139,8 +155,10 @@ def fetch_sales_from_wb(account_key):
     token = WB_ACCOUNTS[account_key]["token"]
 
     if not token:
-        print(f"Нет токена для {account_key}")
-        return None
+        return {
+            "ok": False,
+            "error": f"Нет токена для {WB_ACCOUNTS[account_key]['name']}"
+        }
 
     url = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
 
@@ -158,95 +176,57 @@ def fetch_sales_from_wb(account_key):
 async def update_stocks_cache(account_key):
     global stocks_cache
 
-    data = await asyncio.to_thread(fetch_stocks_from_wb, account_key)
+    result = await asyncio.to_thread(fetch_stocks_from_wb, account_key)
 
-    if data is None:
-        return False
+    if not result["ok"]:
+        return result
+
+    data = result["data"]
 
     stocks_cache[account_key] = {
         "time": time.time(),
         "data": data
     }
 
-    save_json(cache_file("stocks", account_key), stocks_cache[account_key])
+    save_json(
+        cache_file("stocks", account_key),
+        stocks_cache[account_key]
+    )
 
-    print(f"Остатки обновлены: {WB_ACCOUNTS[account_key]['name']}")
-    return True
+    return {
+        "ok": True,
+        "count": len(data)
+    }
 
 
 async def update_sales_cache(account_key):
     global sales_cache
 
-    data = await asyncio.to_thread(fetch_sales_from_wb, account_key)
+    result = await asyncio.to_thread(fetch_sales_from_wb, account_key)
 
-    if data is None:
-        return False
+    if not result["ok"]:
+        return result
+
+    data = result["data"]
 
     sales_cache[account_key] = {
         "time": time.time(),
         "data": data
     }
 
-    save_json(cache_file("sales", account_key), sales_cache[account_key])
+    save_json(
+        cache_file("sales", account_key),
+        sales_cache[account_key]
+    )
 
-    print(f"Выкупы обновлены: {WB_ACCOUNTS[account_key]['name']}")
-    print(f"Строк выкупов: {len(data)}")
-    return True
-
-
-async def update_all_stocks():
-    results = []
-
-    for account_key in WB_ACCOUNTS:
-        ok = await update_stocks_cache(account_key)
-        results.append(ok)
-
-        print(f"Пауза {REQUEST_DELAY_SECONDS} сек между запросами WB...")
-        await asyncio.sleep(REQUEST_DELAY_SECONDS)
-
-    return any(results)
-
-
-async def update_all_sales():
-    results = []
-
-    for account_key in WB_ACCOUNTS:
-        ok = await update_sales_cache(account_key)
-        results.append(ok)
-
-        print(f"Пауза {REQUEST_DELAY_SECONDS} сек между запросами WB...")
-        await asyncio.sleep(REQUEST_DELAY_SECONDS)
-
-    return any(results)
-
-
-async def periodic_update(application):
-    load_all_cache()
-
-    # На старте сначала грузим остатки, потом через паузу выкупы
-    await update_all_stocks()
-    await asyncio.sleep(REQUEST_DELAY_SECONDS)
-    await update_all_sales()
-
-    last_stocks_update = time.time()
-    last_sales_update = time.time()
-
-    while True:
-        await asyncio.sleep(60)
-
-        now = time.time()
-
-        if now - last_stocks_update >= STOCKS_REFRESH_SECONDS:
-            await update_all_stocks()
-            last_stocks_update = now
-
-        if now - last_sales_update >= SALES_REFRESH_SECONDS:
-            await update_all_sales()
-            last_sales_update = now
+    return {
+        "ok": True,
+        "count": len(data)
+    }
 
 
 async def post_init(application):
-    application.create_task(periodic_update(application))
+    load_all_cache()
 
 
 def main_keyboard():
@@ -254,8 +234,17 @@ def main_keyboard():
         [InlineKeyboardButton("📦 Остатки по артикулам", callback_data="articles_menu")],
         [InlineKeyboardButton("📦 Сводка остатков", callback_data="stocks_summary")],
         [InlineKeyboardButton("💰 Выкупы ТОП-10", callback_data="sales_menu")],
-        [InlineKeyboardButton("🔄 Обновить остатки", callback_data="refresh_stocks")],
-        [InlineKeyboardButton("🔄 Обновить выкупы", callback_data="refresh_sales")]
+        [InlineKeyboardButton("🔄 Обновление данных", callback_data="refresh_menu")]
+    ])
+
+
+def refresh_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Остатки Эльвиры", callback_data="refresh_stocks_main")],
+        [InlineKeyboardButton("🔄 Остатки Рината", callback_data="refresh_stocks_second")],
+        [InlineKeyboardButton("🔄 Выкупы Эльвиры", callback_data="refresh_sales_main")],
+        [InlineKeyboardButton("🔄 Выкупы Рината", callback_data="refresh_sales_second")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
     ])
 
 
@@ -267,7 +256,17 @@ async def start(update, context):
 
 
 async def main_menu(query):
-    await query.message.reply_text("Главное меню:", reply_markup=main_keyboard())
+    await query.message.reply_text(
+        "Главное меню:",
+        reply_markup=main_keyboard()
+    )
+
+
+async def refresh_menu(update, context):
+    await update.callback_query.message.reply_text(
+        "Выберите, что обновить.\nЛучше нажимать одну кнопку и ждать ответ.",
+        reply_markup=refresh_keyboard()
+    )
 
 
 async def sales_menu(update, context):
@@ -400,7 +399,10 @@ async def article_detail(update, context, account_key, base_article):
             f"Обновлено: {format_time(cache.get('time', 0))}"
         )
     else:
-        items = sorted(items, key=lambda x: (x["quantity"], x["article"], x["size"]))
+        items = sorted(
+            items,
+            key=lambda x: (x["quantity"], x["article"], x["size"])
+        )
 
         text = (
             f"⚠️ {account['name']}\n"
@@ -457,7 +459,9 @@ def get_raw_sales_count(account_filter):
             for key in WB_ACCOUNTS
         )
 
-    return len(sales_cache.get(account_filter, {"data": []}).get("data", []))
+    return len(
+        sales_cache.get(account_filter, {"data": []}).get("data", [])
+    )
 
 
 def get_filtered_sales_count(account_filter):
@@ -488,7 +492,9 @@ def get_sales_updated_text(account_filter):
 
         for account_key, account in WB_ACCOUNTS.items():
             cache = sales_cache.get(account_key, {"time": 0, "data": []})
-            parts.append(f"{account['name']}: {format_time(cache.get('time', 0))}")
+            parts.append(
+                f"{account['name']}: {format_time(cache.get('time', 0))}"
+            )
 
         return "\n".join(parts)
 
@@ -545,7 +551,11 @@ def build_buyout_items(account_filter):
             grouped[key]["count"] += 1
             grouped[key]["sum"] += price
 
-    return sorted(grouped.values(), key=lambda x: x["count"], reverse=True)
+    return sorted(
+        grouped.values(),
+        key=lambda x: x["count"],
+        reverse=True
+    )
 
 
 async def sales_summary(update, context, account_filter):
@@ -610,33 +620,47 @@ async def sales_summary(update, context, account_filter):
     )
 
 
-async def refresh_stocks(update, context):
+async def refresh_one_stocks(update, context, account_key):
+    account_name = WB_ACCOUNTS[account_key]["name"]
+
     await update.callback_query.message.reply_text(
-        "🔄 Обновляю остатки по кабинетам...\nЭто может занять около минуты."
+        f"🔄 Обновляю остатки: {account_name}..."
     )
 
-    ok = await update_all_stocks()
+    result = await update_stocks_cache(account_key)
 
-    if ok:
-        await update.callback_query.message.reply_text("✅ Остатки обновлены.")
+    if result["ok"]:
+        await update.callback_query.message.reply_text(
+            f"✅ Остатки обновлены: {account_name}\n"
+            f"Строк из WB: {result['count']}"
+        )
     else:
         await update.callback_query.message.reply_text(
-            "⚠️ WB временно ограничил запросы. Показываю старые остатки из кэша."
+            f"⚠️ Остатки не обновлены: {account_name}\n"
+            f"Причина: {result['error']}\n\n"
+            f"Показываю старые данные из кэша."
         )
 
 
-async def refresh_sales(update, context):
+async def refresh_one_sales(update, context, account_key):
+    account_name = WB_ACCOUNTS[account_key]["name"]
+
     await update.callback_query.message.reply_text(
-        "🔄 Обновляю выкупы по кабинетам...\nЭто может занять около минуты."
+        f"🔄 Обновляю выкупы: {account_name}..."
     )
 
-    ok = await update_all_sales()
+    result = await update_sales_cache(account_key)
 
-    if ok:
-        await update.callback_query.message.reply_text("✅ Выкупы обновлены.")
+    if result["ok"]:
+        await update.callback_query.message.reply_text(
+            f"✅ Выкупы обновлены: {account_name}\n"
+            f"Строк из WB: {result['count']}"
+        )
     else:
         await update.callback_query.message.reply_text(
-            "⚠️ WB временно ограничил запросы. Показываю старые выкупы из кэша."
+            f"⚠️ Выкупы не обновлены: {account_name}\n"
+            f"Причина: {result['error']}\n\n"
+            f"Показываю старые данные из кэша."
         )
 
 
@@ -646,6 +670,9 @@ async def button_handler(update, context):
 
     if query.data == "main_menu":
         await main_menu(query)
+
+    elif query.data == "refresh_menu":
+        await refresh_menu(update, context)
 
     elif query.data == "articles_menu":
         await articles_menu(update, context)
@@ -665,11 +692,17 @@ async def button_handler(update, context):
     elif query.data == "sales_account_all":
         await sales_summary(update, context, "all")
 
-    elif query.data == "refresh_stocks":
-        await refresh_stocks(update, context)
+    elif query.data == "refresh_stocks_main":
+        await refresh_one_stocks(update, context, "main")
 
-    elif query.data == "refresh_sales":
-        await refresh_sales(update, context)
+    elif query.data == "refresh_stocks_second":
+        await refresh_one_stocks(update, context, "second")
+
+    elif query.data == "refresh_sales_main":
+        await refresh_one_sales(update, context, "main")
+
+    elif query.data == "refresh_sales_second":
+        await refresh_one_sales(update, context, "second")
 
     elif query.data.startswith("article_"):
         parts = query.data.split("_", 2)

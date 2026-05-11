@@ -264,7 +264,7 @@ async def main_menu(query):
 
 async def refresh_menu(update, context):
     await update.callback_query.message.reply_text(
-        "Выберите, что обновить.\nЛучше нажимать одну кнопку и ждать ответ.",
+        "Выберите, что обновить.",
         reply_markup=refresh_keyboard()
     )
 
@@ -316,7 +316,9 @@ async def articles_menu(update, context):
         if row:
             keyboard.append(row)
 
-    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")])
+    keyboard.append([
+        InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
+    ])
 
     await update.callback_query.message.reply_text(
         f"Выберите артикул.\nПокажу размеры, где остаток меньше {LOW_STOCK_LIMIT} шт.",
@@ -339,22 +341,22 @@ async def stocks_summary(update, context):
         for item in data:
             article = item.get("supplierArticle", "")
             quantity = item.get("quantity", 0)
+
             base = get_base_article(article, account_key)
 
             if not base:
                 continue
 
-            account_grouped[base] = account_grouped.get(base, 0) + quantity
+            account_grouped[base] = (
+                account_grouped.get(base, 0) + quantity
+            )
+
             account_total += quantity
             total_all += quantity
 
         text += f"🏬 {account['name']}\n"
         text += f"Обновлено: {format_time(cache.get('time', 0))}\n"
         text += f"Итого: {account_total} шт\n"
-
-        if not articles:
-            text += "Артикулы не добавлены\n\n"
-            continue
 
         for article in articles:
             text += f"{article}: {account_grouped.get(article, 0)} шт\n"
@@ -368,6 +370,7 @@ async def stocks_summary(update, context):
 
 async def article_detail(update, context, account_key, base_article):
     account = WB_ACCOUNTS[account_key]
+
     cache = stocks_cache.get(account_key, {"time": 0, "data": []})
     data = cache.get("data", [])
 
@@ -420,9 +423,6 @@ async def article_detail(update, context, account_key, base_article):
                 f"Склад: {item['warehouse']}\n\n"
             )
 
-        if len(items) > 40:
-            text += f"Показано 40 из {len(items)} строк."
-
     keyboard = [
         [InlineKeyboardButton("⬅️ К артикулам", callback_data="articles_menu")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
@@ -447,59 +447,10 @@ def build_stock_lookup(account_key):
         quantity = item.get("quantity", 0)
 
         key = (article, size, barcode)
+
         lookup[key] = lookup.get(key, 0) + quantity
 
     return lookup
-
-
-def get_raw_sales_count(account_filter):
-    if account_filter == "all":
-        return sum(
-            len(sales_cache.get(key, {"data": []}).get("data", []))
-            for key in WB_ACCOUNTS
-        )
-
-    return len(
-        sales_cache.get(account_filter, {"data": []}).get("data", [])
-    )
-
-
-def get_filtered_sales_count(account_filter):
-    if account_filter == "all":
-        account_keys = list(WB_ACCOUNTS.keys())
-    else:
-        account_keys = [account_filter]
-
-    count = 0
-
-    for account_key in account_keys:
-        cache = sales_cache.get(account_key, {"time": 0, "data": []})
-        data = cache.get("data", [])
-
-        for item in data:
-            article = item.get("supplierArticle", "")
-            base = get_base_article(article, account_key)
-
-            if base:
-                count += 1
-
-    return count
-
-
-def get_sales_updated_text(account_filter):
-    if account_filter == "all":
-        parts = []
-
-        for account_key, account in WB_ACCOUNTS.items():
-            cache = sales_cache.get(account_key, {"time": 0, "data": []})
-            parts.append(
-                f"{account['name']}: {format_time(cache.get('time', 0))}"
-            )
-
-        return "\n".join(parts)
-
-    cache = sales_cache.get(account_filter, {"time": 0, "data": []})
-    return format_time(cache.get("time", 0))
 
 
 def build_buyout_items(account_filter):
@@ -512,12 +463,15 @@ def build_buyout_items(account_filter):
 
     for account_key in account_keys:
         account = WB_ACCOUNTS[account_key]
+
         cache = sales_cache.get(account_key, {"time": 0, "data": []})
         data = cache.get("data", [])
+
         stock_lookup = build_stock_lookup(account_key)
 
         for item in data:
             article = item.get("supplierArticle", "Без артикула")
+
             base = get_base_article(article, account_key)
 
             if not base:
@@ -533,9 +487,17 @@ def build_buyout_items(account_filter):
                 or 0
             )
 
-            stock_qty = stock_lookup.get((article, size, barcode), 0)
+            stock_qty = stock_lookup.get(
+                (article, size, barcode),
+                0
+            )
 
-            key = (account_key, article, size, barcode)
+            key = (
+                account_key,
+                article,
+                size,
+                barcode
+            )
 
             if key not in grouped:
                 grouped[key] = {
@@ -561,30 +523,21 @@ def build_buyout_items(account_filter):
 async def sales_summary(update, context, account_filter):
     items = build_buyout_items(account_filter)
 
-    raw_count = get_raw_sales_count(account_filter)
-    filtered_count = get_filtered_sales_count(account_filter)
-    updated_text = get_sales_updated_text(account_filter)
-
     if account_filter == "all":
         title = f"📊 Общие выкупы за {SALES_PERIOD_DAYS} дней"
     else:
-        title = f"💰 Выкупы за {SALES_PERIOD_DAYS} дней\n{WB_ACCOUNTS[account_filter]['name']}"
+        title = (
+            f"💰 Выкупы за {SALES_PERIOD_DAYS} дней\n"
+            f"{WB_ACCOUNTS[account_filter]['name']}"
+        )
 
     total_sum = sum(x["sum"] for x in items)
     total_count = sum(x["count"] for x in items)
-
-    diagnostic_text = (
-        f"\n\n🔍 Диагностика:\n"
-        f"WB API вернул строк: {raw_count}\n"
-        f"После фильтрации по артикулам: {filtered_count}\n"
-        f"Обновлено:\n{updated_text}"
-    )
 
     if not items:
         text = (
             f"{title}\n\n"
             f"Выкупов за последние {SALES_PERIOD_DAYS} дней не найдено."
-            f"{diagnostic_text}"
         )
     else:
         text = (
@@ -595,7 +548,11 @@ async def sales_summary(update, context, account_filter):
         )
 
         for index, item in enumerate(items[:TOP_SALES_LIMIT], start=1):
-            stock_warning = " ⚠️" if item["stock"] < LOW_STOCK_LIMIT else ""
+            stock_warning = (
+                " ⚠️"
+                if item["stock"] < LOW_STOCK_LIMIT
+                else ""
+            )
 
             text += (
                 f"{index}. {item['article']}\n"
@@ -606,8 +563,6 @@ async def sales_summary(update, context, account_filter):
                 f"Выручка: {round(item['sum'], 2)} ₽\n"
                 f"Остаток: {item['stock']} шт{stock_warning}\n\n"
             )
-
-        text += diagnostic_text
 
     keyboard = [
         [InlineKeyboardButton("⬅️ К выкупам", callback_data="sales_menu")],
@@ -637,8 +592,7 @@ async def refresh_one_stocks(update, context, account_key):
     else:
         await update.callback_query.message.reply_text(
             f"⚠️ Остатки не обновлены: {account_name}\n"
-            f"Причина: {result['error']}\n\n"
-            f"Показываю старые данные из кэша."
+            f"Причина: {result['error']}"
         )
 
 
@@ -659,13 +613,13 @@ async def refresh_one_sales(update, context, account_key):
     else:
         await update.callback_query.message.reply_text(
             f"⚠️ Выкупы не обновлены: {account_name}\n"
-            f"Причина: {result['error']}\n\n"
-            f"Показываю старые данные из кэша."
+            f"Причина: {result['error']}"
         )
 
 
 async def button_handler(update, context):
     query = update.callback_query
+
     await query.answer()
 
     if query.data == "main_menu":
@@ -706,12 +660,21 @@ async def button_handler(update, context):
 
     elif query.data.startswith("article_"):
         parts = query.data.split("_", 2)
+
         account_key = parts[1]
         base_article = parts[2]
-        await article_detail(update, context, account_key, base_article)
+
+        await article_detail(
+            update,
+            context,
+            account_key,
+            base_article
+        )
 
     elif query.data.startswith("noop_"):
-        await query.message.reply_text("Выберите артикул ниже.")
+        await query.message.reply_text(
+            "Выберите артикул ниже."
+        )
 
 
 app = (
@@ -725,4 +688,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_handler))
 
 print("Бот запущен...")
+
 app.run_polling()
